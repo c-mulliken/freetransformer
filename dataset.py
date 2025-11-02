@@ -1,8 +1,9 @@
 # create a synthetic dataset in line w/ Fleuret (2025)
 
 import random
+from typing import List
 
-def generate_synthetic_data(num_samples: int) -> list[str]:
+def generate_synthetic_data(num_samples: int) -> List[str]:
     data = []
     letter_seq_length = 8
     exclamation_prob = 1/16
