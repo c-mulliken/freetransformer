@@ -95,7 +95,7 @@ def train():
                 input_seq = torch.tensor([prompt_enc], dtype=torch.long).to(device)
 
                 for _ in range(64):  # Generate exactly 64 characters
-                    logits = model(input_seq)
+                    logits, _ = model(input_seq)  # Unpack tuple
                     probs = torch.softmax(logits[:, -1, :], dim=-1)
                     next_token = torch.multinomial(probs, 1)
                     input_seq = torch.cat([input_seq, next_token], dim=1)
