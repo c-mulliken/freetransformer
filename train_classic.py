@@ -5,12 +5,16 @@ from utils import char_tokenizer
 from dataset import generate_synthetic_data
 
 def train():
+    # Set device
+    device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+    print(f"Using device: {device}")
+
     # Generate synthetic data
     data = generate_synthetic_data(10000)
-    
+
     # Tokenize data
     enc, stoi, itos = char_tokenizer(data)
-    
+
     # Hyperparameters
     vocab_size = len(stoi)
     max_len = 64 + 2  # 64 chars + 2 for prompt
@@ -24,7 +28,7 @@ def train():
     lr = 1e-3
 
     # Initialize model, loss function, and optimizer
-    model = TransformerModel(vocab_size, max_len, embed_dim, num_heads, ff_dim, num_layers, dropout)
+    model = TransformerModel(vocab_size, max_len, embed_dim, num_heads, ff_dim, num_layers, dropout).to(device)
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
@@ -33,8 +37,8 @@ def train():
         total_loss = 0
         for i in range(0, len(enc), batch_size):
             batch = enc[i:i+batch_size]
-            batch_input = torch.tensor([seq[:-1] for seq in batch], dtype=torch.long)
-            batch_target = torch.tensor([seq[1:] for seq in batch], dtype=torch.long)
+            batch_input = torch.tensor([seq[:-1] for seq in batch], dtype=torch.long).to(device)
+            batch_target = torch.tensor([seq[1:] for seq in batch], dtype=torch.long).to(device)
 
             optimizer.zero_grad()
             logits = model(batch_input)
@@ -55,7 +59,7 @@ def train():
                 letter = random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
                 prompt = f"{letter}>"
                 prompt_enc = [stoi.get(c, 0) for c in prompt]
-                input_seq = torch.tensor([prompt_enc], dtype=torch.long)
+                input_seq = torch.tensor([prompt_enc], dtype=torch.long).to(device)
 
                 for _ in range(64):  # Generate exactly 64 characters
                     logits = model(input_seq)
