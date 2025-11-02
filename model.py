@@ -191,49 +191,39 @@ class FTBinaryMapper(nn.Module):
         logits: (B, T, H) - logits for each bit
         Returns: z_onehot (B, T, 2^H), kl_divergence (B, T)
 
-        Implements Equation 6-8 from the paper.
+        Efficient implementation using straight-through estimator for gradients.
         """
         B, T, H = logits.shape
         assert H == self.H, "Input feature dimension must match H"
 
         # Sample bits independently (Equation 6)
-        p = torch.sigmoid(logits)  # P(B_t,h = 1)
-        u = torch.rand_like(p)
-        bits = (u < p).float()  # sampled bits B_t,h
+        p = torch.sigmoid(logits)  # P(B_t,h = 1) - shape (B, T, H)
 
-        # Convert bits to index: d = 1 + sum_h 2^(h-1) * B_h,t
-        idx = (bits * self.powers).sum(dim=-1).long()
+        if self.training:
+            u = torch.rand_like(p)
+            bits = (u < p).float()  # sampled bits B_t,h
+        else:
+            bits = (p > 0.5).float()  # deterministic at inference
+
+        # Straight-through estimator: forward uses bits, backward uses p
+        bits_st = bits + (p - p.detach())
+
+        # Convert bits to index: d = sum_h 2^h * B_h,t
+        idx = (bits_st * self.powers).sum(dim=-1).long()
 
         # Create one-hot vector Y_t,d (Equation 7)
         z_onehot = F.one_hot(idx, num_classes=2**self.H).float()
 
-        # Compute gradient probabilities G_t,d for all possible values (used for gradient)
-        # G_t,d = P(B_t = U(d-1)) where U(d) is binary encoding of d
-        # This is exp(sum_h log P(B_t,h = U_h(d-1)))
-        all_indices = torch.arange(2**self.H, device=logits.device)  # 0 to 2^H - 1
-        binary_matrix = ((all_indices.unsqueeze(-1) >> torch.arange(H, device=logits.device)) & 1).float()  # (2^H, H)
+        # Compute KL divergence analytically from bit probabilities
+        # KL(Q||U) for each bit independently, then sum
+        # KL(Bernoulli(p) || Bernoulli(0.5)) = p*log(2p) + (1-p)*log(2(1-p))
+        # = p*log(p) + (1-p)*log(1-p) + log(2)
+        eps = 1e-10
+        kl_per_bit = p * torch.log(p + eps) + (1 - p) * torch.log(1 - p + eps) + torch.log(torch.tensor(2.0))
+        # Sum over H bits to get total KL per token
+        kl_divergence = kl_per_bit.sum(dim=-1)  # (B, T)
 
-        # For each position (B, T), compute G_t,d for all d
-        # log P(B_t,h = b) = b * log(p) + (1-b) * log(1-p)
-        log_p = torch.log(p + 1e-10)  # (B, T, H)
-        log_1mp = torch.log(1 - p + 1e-10)  # (B, T, H)
-
-        # Broadcast and compute log probabilities for all binary combinations
-        # (B, T, 1, H) with binary_matrix (2^H, H)
-        log_probs = binary_matrix.unsqueeze(0).unsqueeze(0) * log_p.unsqueeze(2) + \
-                    (1 - binary_matrix.unsqueeze(0).unsqueeze(0)) * log_1mp.unsqueeze(2)
-        G = torch.exp(log_probs.sum(dim=-1))  # (B, T, 2^H)
-
-        # Gradient pass-through (Equation 8): Y_t,d + G_t,d - detach(G_t,d)
-        z_onehot_grad = z_onehot + G - G.detach()
-
-        # Compute KL divergence (Equation 4)
-        # D_KL(Q(Z_t | S) || P(Z_t)) = H*log(2) + sum_{z=1}^{2^H} Q(Z=z|S) log Q(Z=z|S)
-        # Q(Z = z | S) is stored in G_t,d
-        kl_divergence = H * torch.log(torch.tensor(2.0, device=logits.device)) + \
-                       (G * torch.log(G + 1e-10)).sum(dim=-1)  # (B, T)
-
-        return z_onehot_grad, kl_divergence
+        return z_onehot, kl_divergence
 
 class FTBinaryDecoder(nn.Module):
     def __init__(self, H, embed_dim):
